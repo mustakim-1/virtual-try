@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChronoFit - Live AR Try-On</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- AI Hand Tracking Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --color-background-start: #111827; --color-background-end: #000000;
+            --color-container: #1F2937; --color-panel: #374151;
+            --color-border: #4B5563; --color-text-primary: #F3F4F6;
+            --color-accent: #FBBF24; --color-accent-dark: #D97706; --color-accent-glow: rgba(251, 191, 36, 0.3);
+            --font-display: 'Playfair Display', serif; --font-body: 'Montserrat', sans-serif;
+        }
+        body { background-color: var(--color-background-start); background-image: linear-gradient(to br, var(--color-background-start), var(--color-background-end)); font-family: var(--font-body); color: var(--color-text-primary); }
+        .live-view-container { position: relative; width: 100%; height: 100%; min-height: 500px; max-height: 90vh; overflow: hidden; border-radius: 1.5rem; background-color: #000; }
+        #webcam, #tryOnCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+        #webcam { visibility: hidden; } /* Hide the raw video feed, we only need its data */
+        #tryOnCanvas { cursor: grab; }
+        #tryOnCanvas.dragging { cursor: grabbing; }
+        .panel { background-color: var(--color-panel); border: 1px solid var(--color-border); box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.2); }
+        .font-display { font-family: var(--font-display); }
+        .spinner { border: 6px solid rgba(255, 255, 255, 0.1); border-left-color: var(--color-accent); border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .option-image { width: 144px; height: 144px; border: 4px solid transparent; border-radius: 1rem; cursor: pointer; transition: all 0.3s ease-in-out; object-fit: cover; flex-shrink: 0; box-shadow: 0 8px 16px rgba(0,0,0,0.2); }
+        .option-image:hover { transform: translateY(-8px) scale(1.03); box-shadow: 0 14px 28px rgba(0,0,0,0.28); border-color: var(--color-accent-glow); }
+        .option-image.selected { border-color: var(--color-accent); box-shadow: 0 0 0 4px var(--color-accent-glow), 0 10px 20px rgba(0,0,0,0.2); transform: translateY(-4px) scale(1.02); }
+        .scrollable-container { -webkit-overflow-scrolling: touch; padding-bottom: 1.5rem; margin-bottom: -1.5rem; }
+        input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; background: var(--color-border); border-radius: 5px; outline: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 24px; height: 24px; border-radius: 50%; background: var(--color-accent); cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.4); margin-top: -8px; transition: background 0.2s ease, transform 0.2s ease; }
+        input[type="range"]::-webkit-slider-thumb:hover { background: var(--color-accent-dark); transform: scale(1.1); }
+        ::-webkit-scrollbar { width: 12px; height: 12px; } ::-webkit-scrollbar-track { background: var(--color-panel); border-radius: 10px; } ::-webkit-scrollbar-thumb { background: var(--color-accent-dark); border-radius: 10px; border: 3px solid var(--color-panel); } ::-webkit-scrollbar-thumb:hover { background: var(--color-accent); }
+    </style>
+</head>
+<body class="antialiased flex flex-col items-center justify-center min-h-screen p-4 sm:p-6">
+    
+    <div class="bg-gray-800 border border-gray-700 shadow-2xl rounded-3xl p-6 sm:p-10 w-full max-w-7xl flex flex-col gap-8">
+        <header class="text-center">
+            <h1 class="text-5xl md:text-7xl font-extrabold text-amber-400 font-display leading-tight">ChronoFit Live ✨</h1>
+            <p class="text-lg md:text-xl text-gray-300 mt-4 font-body">The future of watch try-on. Smooth, stable, and live.</p>
+        </header>
+
+        <section class="panel p-6 rounded-2xl">
+            <label class="block text-2xl md:text-3xl font-bold text-amber-400 mb-6 font-display">1. Select Your Watch</label>
+            <div id="watchFaceOptions" class="scrollable-container flex flex-nowrap gap-6 overflow-x-auto">
+                 <img src="images/unnamed-removebg-preview.png" alt="Indigo Dress Watch" class="option-image" data-watch-src="images/unnamed-removebg-preview.png">
+                <img src="https://via.placeholder.com/300x300/F39C12/FFFFFF?text=Vintage+Gold" alt="Vintage Gold Watch Face" class="option-image" data-watch-src="https://via.placeholder.com/300x300/F39C12/FFFFFF?text=Vintage+Gold">
+                <img src="https://via.placeholder.com/300x300/BDC3C7/2C3E50?text=Minimal+Silver" alt="Minimal Silver Watch Face" class="option-image" data-watch-src="https://via.placeholder.co/300x300/BDC3C7/2C3E50?text=Minimal+Silver">
+                <img src="https://via.placeholder.co/300x300/27AE60/FFFFFF?text=Diver+Green" alt="Diver Green Watch Face" class="option-image" data-watch-src="https://via.placeholder.co/300x300/27AE60/FFFFFF?text=Diver+Green">
+                <img src="https://via.placeholder.co/300x300/E74C3C/FFFFFF?text=Racing+Chrono" alt="Racing Chrono Watch Face" class="option-image" data-watch-src="https://via.placeholder.com/300x300/E74C3C/FFFFFF?text=Racing+Chrono">
+            </div>
+        </section>
+
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-8">
+            <div class="lg:col-span-3 panel live-view-container flex items-center justify-center">
+                <video id="webcam" autoplay playsinline></video>
+                <canvas id="tryOnCanvas"></canvas>
+                <div id="loadingOverlay" class="absolute inset-0 bg-black bg-opacity-70 backdrop-blur-sm flex flex-col items-center justify-center text-center p-4">
+                    <div id="loadingSpinner" class="spinner hidden"></div>
+                    <p id="loadingText" class="text-gray-200 text-2xl font-semibold font-display mt-5">Ready to begin your live try-on.</p>
+                    <button id="startCamBtn" class="mt-6 bg-gradient-to-r from-amber-400 to-amber-600 text-gray-900 py-4 px-8 rounded-xl hover:from-amber-500 hover:to-amber-700 transition duration-300 ease-in-out font-bold text-lg shadow-lg hover:shadow-xl transform hover:-translate-y-1">
+                        Start Camera
+                    </button>
+                </div>
+            </div>
+
+            <div id="watchControls" class="lg:col-span-2 panel p-6 rounded-2xl space-y-8 flex flex-col justify-center">
+                <h2 class="text-2xl md:text-3xl font-bold text-amber-400 font-display text-center">2. Fine-Tune Your Fit</h2>
+                <div class="flex items-center justify-center gap-4 bg-gray-700 p-3 rounded-lg">
+                    <label for="autoPositionToggle" class="font-semibold text-gray-200">AI Tracking</label>
+                    <div class="relative inline-block w-14 align-middle select-none transition duration-200 ease-in">
+                        <input type="checkbox" name="autoPositionToggle" id="autoPositionToggle" class="toggle-checkbox absolute block w-7 h-7 rounded-full bg-white border-4 appearance-none cursor-pointer" checked/>
+                        <label for="autoPositionToggle" class="toggle-label block overflow-hidden h-7 rounded-full bg-gray-500 cursor-pointer"></label>
+                    </div>
+                </div>
+                <div>
+                    <label for="watchSize" class="block text-xl font-semibold text-gray-200 mb-3 font-body">Size Adjust</label>
+                    <input type="range" id="watchSize" min="50" max="200" value="100">
+                </div>
+                <div>
+                    <label for="watchRotation" class="block text-xl font-semibold text-gray-200 mb-3 font-body">Rotation Adjust</label>
+                    <input type="range" id="watchRotation" min="-45" max="45" value="0">
+                </div>
+                <div class="flex flex-col gap-4 pt-4">
+                    <button id="downloadBtn" class="w-full bg-gradient-to-r from-amber-400 to-amber-600 text-gray-900 py-4 px-6 rounded-xl hover:from-amber-500 hover:to-amber-700 transition duration-300 ease-in-out font-bold text-lg shadow-lg hover:shadow-xl transform hover:-translate-y-1 flex items-center justify-center gap-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        Snapshot
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <style>.toggle-checkbox:checked { right: 0; border-color: var(--color-accent); } .toggle-checkbox:checked + .toggle-label { background-color: var(--color-accent); }</style>
+    <script>
+        // DOM Elements
+        const webcam = document.getElementById('webcam');
+        const tryOnCanvas = document.getElementById('tryOnCanvas');
+        const ctx = tryOnCanvas.getContext('2d');
+        const watchFaceOptionsContainer = document.getElementById('watchFaceOptions');
+        const watchSizeSlider = document.getElementById('watchSize');
+        const watchRotationSlider = document.getElementById('watchRotation');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const loadingText = document.getElementById('loadingText');
+        const startCamBtn = document.getElementById('startCamBtn');
+        const autoPositionToggle = document.getElementById('autoPositionToggle');
+
+        // State
+        let watchImage = new Image();
+        let useAI = true;
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+        let handDetected = false;
+
+        // Smoothed state for the watch - THIS IS THE KEY TO NO JITTER!
+        let smoothedState = {
+            x: 0, y: 0,
+            scale: 0.1,
+            rotation: 0
+        };
+
+        // --- Helper Functions ---
+        const lerp = (start, end, amt) => (1 - amt) * start + amt * end;
+
+        const showLoadingState = (text, showSpinner, showButton) => {
+            loadingText.textContent = text;
+            loadingSpinner.style.display = showSpinner ? 'block' : 'none';
+            startCamBtn.style.display = showButton ? 'block' : 'none';
+            loadingOverlay.style.display = 'flex';
+        };
+
+        // --- AI Hand Tracking Setup ---
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        hands.onResults(onResults);
+
+        // --- Core Logic ---
+        function onResults(results) {
+            const canvasWidth = tryOnCanvas.width;
+            const canvasHeight = tryOnCanvas.height;
+            
+            // This is the core mirroring fix.
+            // We flip the entire canvas context horizontally.
+            ctx.save();
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            ctx.scale(-1, 1);
+            ctx.translate(-canvasWidth, 0);
+            
+            // Draw the webcam feed, which will now be correctly mirrored.
+            ctx.drawImage(webcam, 0, 0, canvasWidth, canvasHeight);
+            
+            let targetState = null;
+            handDetected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
+
+            if (handDetected) {
+                const landmarks = results.multiHandLandmarks[0];
+                const wrist = landmarks[0];
+                const index_mcp = landmarks[5];
+                const pinky_mcp = landmarks[17];
+                
+                // Calculate scale based on the distance between index and pinky knuckles.
+                const wristWidthNorm = Math.hypot(index_mcp.x - pinky_mcp.x, index_mcp.y - pinky_mcp.y);
+                const targetScale = wristWidthNorm * 2.5; // Adjust multiplier for best fit
+
+                // Calculate rotation based on the hand's angle.
+                const angleRad = Math.atan2(index_mcp.y - wrist.y, index_mcp.x - wrist.x);
+                let targetRotation = (angleRad * (180 / Math.PI)) - 90; // Adjust for watch orientation
+
+                targetState = {
+                    x: wrist.x * canvasWidth,
+                    y: wrist.y * canvasHeight,
+                    scale: targetScale,
+                    rotation: targetRotation
+                };
+            }
+
+            // If AI is on and a hand is detected, smoothly move the watch.
+            // If dragging, AI positioning is temporarily ignored.
+            if (useAI && !isDragging && targetState) {
+                const smoothingFactor = 0.2; // Lower is smoother but laggier
+                smoothedState.x = lerp(smoothedState.x, targetState.x, smoothingFactor);
+                smoothedState.y = lerp(smoothedState.y, targetState.y, smoothingFactor);
+                smoothedState.scale = lerp(smoothedState.scale, targetState.scale, smoothingFactor);
+                smoothedState.rotation = lerp(smoothedState.rotation, targetState.rotation, smoothingFactor);
+            }
+
+            // Draw the watch if an image is selected
+            if (watchImage.src) {
+                drawWatch();
+            }
+
+            ctx.restore(); // Restore context to prevent mirroring issues on subsequent frames.
+        }
+
+        function drawWatch() {
+            const userScale = parseFloat(watchSizeSlider.value) / 100;
+            const userRotation = parseFloat(watchRotationSlider.value);
+            
+            const finalScale = smoothedState.scale * userScale;
+            const finalRotation = smoothedState.rotation + userRotation;
+
+            const w = watchImage.width * finalScale;
+            const h = watchImage.height * finalScale;
+            const x = smoothedState.x - w / 2;
+            const y = smoothedState.y - h / 2;
+            
+            ctx.save();
+            ctx.translate(smoothedState.x, smoothedState.y);
+            ctx.rotate(finalRotation * Math.PI / 180);
+            ctx.drawImage(watchImage, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+
+        // --- Event Listeners ---
+        startCamBtn.addEventListener('click', async () => {
+            showLoadingState('Requesting camera access...', true, false);
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+                webcam.srcObject = stream;
+                webcam.onloadedmetadata = () => {
+                    tryOnCanvas.width = webcam.videoWidth;
+                    tryOnCanvas.height = webcam.videoHeight;
+                    const camera = new Camera(webcam, {
+                        onFrame: async () => await hands.send({ image: webcam }),
+                        width: webcam.videoWidth,
+                        height: webcam.videoHeight
+                    });
+                    camera.start();
+                    loadingOverlay.style.display = 'none';
+                    if(!handDetected) smoothedState.x = tryOnCanvas.width / 2; smoothedState.y = tryOnCanvas.height / 2; // Center initially
+                };
+            } catch(err) {
+                showLoadingState('Camera access denied. Please enable it in your browser settings and refresh.', false, true);
+                console.error("Camera access error:", err);
+            }
+        });
+
+        watchFaceOptionsContainer.addEventListener('click', (e) => {
+            const target = e.target;
+            if (target.classList.contains('option-image')) {
+                document.querySelectorAll('#watchFaceOptions .option-image').forEach(img => img.classList.remove('selected'));
+                target.classList.add('selected');
+                watchImage.src = target.dataset.watchSrc;
+            }
+        });
+        
+        autoPositionToggle.addEventListener('change', (e) => {
+            useAI = e.target.checked;
+        });
+
+        // --- Drag & Drop for Manual Adjustment ---
+        const getEventCoordinates = (e) => {
+            const rect = tryOnCanvas.getBoundingClientRect();
+            const x = e.touches ? e.touches[0].clientX : e.clientX;
+            const y = e.touches ? e.touches[0].clientY : e.clientY;
+            // IMPORTANT: We do NOT mirror the coordinates here because the canvas context is already mirrored.
+            return { x: x - rect.left, y: y - rect.top };
+        };
+
+        const handleDragStart = (e) => {
+            if (!watchImage.src || useAI) return;
+            const coords = getEventCoordinates(e);
+            // Check if the click is near the watch
+            if (Math.hypot(coords.x - smoothedState.x, coords.y - smoothedState.y) < (watchImage.width * smoothedState.scale)) {
+                e.preventDefault();
+                isDragging = true;
+                tryOnCanvas.classList.add('dragging');
+                dragStart.x = coords.x - smoothedState.x;
+                dragStart.y = coords.y - smoothedState.y;
+            }
+        };
+
+        const handleDragMove = (e) => {
+            if (!isDragging) return;
+            e.preventDefault();
+            const coords = getEventCoordinates(e);
+            smoothedState.x = coords.x - dragStart.x;
+            smoothedState.y = coords.y - dragStart.y;
+        };
+
+        const handleDragEnd = () => {
+            isDragging = false;
+            tryOnCanvas.classList.remove('dragging');
+        };
+
+        tryOnCanvas.addEventListener('mousedown', handleDragStart);
+        tryOnCanvas.addEventListener('mousemove', handleDragMove);
+        document.addEventListener('mouseup', handleDragEnd);
+        tryOnCanvas.addEventListener('mouseleave', handleDragEnd);
+        tryOnCanvas.addEventListener('touchstart', handleDragStart, { passive: false });
+        tryOnCanvas.addEventListener('touchmove', handleDragMove, { passive: false });
+        tryOnCanvas.addEventListener('touchend', handleDragEnd);
+
+        downloadBtn.addEventListener('click', () => {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = tryOnCanvas.width;
+            tempCanvas.height = tryOnCanvas.height;
+            // Draw the NON-MIRRORED version for the snapshot
+            tempCtx.drawImage(webcam, 0, 0, tempCanvas.width, tempCanvas.height);
+            // Manually re-draw the watch in the correct, non-mirrored position
+            const finalScale = (smoothedState.scale * (parseFloat(watchSizeSlider.value) / 100));
+            const finalRotation = smoothedState.rotation + parseFloat(watchRotationSlider.value);
+            const w = watchImage.width * finalScale;
+            const h = watchImage.height * finalScale;
+            // Invert the X position for the snapshot
+            const finalX = tempCanvas.width - smoothedState.x;
+            tempCtx.save();
+            tempCtx.translate(finalX, smoothedState.y);
+            tempCtx.rotate(-finalRotation * Math.PI / 180); // Invert rotation
+            tempCtx.drawImage(watchImage, -w / 2, -h / 2, w, h);
+            tempCtx.restore();
+
+            const link = document.createElement('a');
+            link.download = 'ChronoFit-Live-Snapshot.png';
+            link.href = tempCanvas.toDataURL('image/png');
+            link.click();
+        });
+
+        // --- Initialization ---
+        window.onload = () => {
+            const firstWatch = document.querySelector('#watchFaceOptions .option-image');
+            if(firstWatch) firstWatch.click();
+            showLoadingState('Ready to begin your live try-on.', false, true);
+        };
+    </script>
+</body>
+</html>
