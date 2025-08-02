@@ -25,9 +25,8 @@
         body { background-color: var(--color-background-start); background-image: linear-gradient(to br, var(--color-background-start), var(--color-background-end)); font-family: var(--font-body); color: var(--color-text-primary); }
         .live-view-container { position: relative; width: 100%; height: 100%; min-height: 500px; max-height: 90vh; overflow: hidden; border-radius: 1.5rem; background-color: #000; }
         #webcam, #tryOnCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
-        #webcam { visibility: hidden; } /* Hide the raw video feed, we only need its data */
-        #tryOnCanvas { cursor: grab; }
-        #tryOnCanvas.dragging { cursor: grabbing; }
+        #webcam { transform: scaleX(-1); /* Correctly mirror the webcam feed */ visibility: hidden; }
+        #tryOnCanvas { cursor: grab; } #tryOnCanvas.dragging { cursor: grabbing; }
         .panel { background-color: var(--color-panel); border: 1px solid var(--color-border); box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.2); }
         .font-display { font-family: var(--font-display); }
         .spinner { border: 6px solid rgba(255, 255, 255, 0.1); border-left-color: var(--color-accent); border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; }
@@ -101,8 +100,8 @@
         </div>
     </div>
     <style>.toggle-checkbox:checked { right: 0; border-color: var(--color-accent); } .toggle-checkbox:checked + .toggle-label { background-color: var(--color-accent); }</style>
+    
     <script>
-        // DOM Elements
         const webcam = document.getElementById('webcam');
         const tryOnCanvas = document.getElementById('tryOnCanvas');
         const ctx = tryOnCanvas.getContext('2d');
@@ -116,21 +115,15 @@
         const startCamBtn = document.getElementById('startCamBtn');
         const autoPositionToggle = document.getElementById('autoPositionToggle');
 
-        // State
         let watchImage = new Image();
         let useAI = true;
         let isDragging = false;
         let dragStart = { x: 0, y: 0 };
         let handDetected = false;
 
-        // Smoothed state for the watch - THIS IS THE KEY TO NO JITTER!
-        let smoothedState = {
-            x: 0, y: 0,
-            scale: 0.1,
-            rotation: 0
-        };
-
-        // --- Helper Functions ---
+        // Note: The original `smoothedState.scale` was too small, making the watch tiny on first detection.
+        // Starting with a larger base scale gives a better initial experience.
+        let smoothedState = { x: 0, y: 0, scale: 0.25, rotation: 0 };
         const lerp = (start, end, amt) => (1 - amt) * start + amt * end;
 
         const showLoadingState = (text, showSpinner, showButton) => {
@@ -140,96 +133,90 @@
             loadingOverlay.style.display = 'flex';
         };
 
-        // --- AI Hand Tracking Setup ---
         const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.6,
-            minTrackingConfidence: 0.6
-        });
+        hands.setOptions({maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6});
         hands.onResults(onResults);
 
-        // --- Core Logic ---
         function onResults(results) {
             const canvasWidth = tryOnCanvas.width;
             const canvasHeight = tryOnCanvas.height;
-            
-            // This is the core mirroring fix.
-            // We flip the entire canvas context horizontally.
+
+            // The canvas context should be cleared and the webcam image drawn every frame.
             ctx.save();
             ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            
+            // Draw the mirrored webcam feed onto the canvas
+            ctx.save();
             ctx.scale(-1, 1);
             ctx.translate(-canvasWidth, 0);
-            
-            // Draw the webcam feed, which will now be correctly mirrored.
             ctx.drawImage(webcam, 0, 0, canvasWidth, canvasHeight);
+            ctx.restore();
             
             let targetState = null;
             handDetected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
 
-            if (handDetected) {
+            if (handDetected && results.multiHandedness[0].label === 'Left') { // Only track the left hand for a watch
                 const landmarks = results.multiHandLandmarks[0];
                 const wrist = landmarks[0];
                 const index_mcp = landmarks[5];
                 const pinky_mcp = landmarks[17];
-                
-                // Calculate scale based on the distance between index and pinky knuckles.
-                const wristWidthNorm = Math.hypot(index_mcp.x - pinky_mcp.x, index_mcp.y - pinky_mcp.y);
-                const targetScale = wristWidthNorm * 2.5; // Adjust multiplier for best fit
-
-                // Calculate rotation based on the hand's angle.
+                const targetScale = Math.hypot(index_mcp.x - pinky_mcp.x, index_mcp.y - pinky_mcp.y) * 2.5;
                 const angleRad = Math.atan2(index_mcp.y - wrist.y, index_mcp.x - wrist.x);
-                let targetRotation = (angleRad * (180 / Math.PI)) - 90; // Adjust for watch orientation
-
-                targetState = {
-                    x: wrist.x * canvasWidth,
-                    y: wrist.y * canvasHeight,
-                    scale: targetScale,
-                    rotation: targetRotation
+                let targetRotation = (angleRad * (180 / Math.PI)) - 90;
+                targetState = { 
+                    x: wrist.x * canvasWidth, 
+                    y: wrist.y * canvasHeight, 
+                    scale: targetScale, 
+                    rotation: targetRotation 
                 };
             }
 
-            // If AI is on and a hand is detected, smoothly move the watch.
-            // If dragging, AI positioning is temporarily ignored.
             if (useAI && !isDragging && targetState) {
-                const smoothingFactor = 0.2; // Lower is smoother but laggier
+                const smoothingFactor = 0.2; // Adjust for more or less smoothing
                 smoothedState.x = lerp(smoothedState.x, targetState.x, smoothingFactor);
                 smoothedState.y = lerp(smoothedState.y, targetState.y, smoothingFactor);
                 smoothedState.scale = lerp(smoothedState.scale, targetState.scale, smoothingFactor);
                 smoothedState.rotation = lerp(smoothedState.rotation, targetState.rotation, smoothingFactor);
             }
 
-            // Draw the watch if an image is selected
-            if (watchImage.src) {
-                drawWatch();
-            }
-
-            ctx.restore(); // Restore context to prevent mirroring issues on subsequent frames.
+            if (watchImage.src) drawWatch();
+            ctx.restore(); // Restore to the initial state before this function was called.
         }
 
         function drawWatch() {
             const userScale = parseFloat(watchSizeSlider.value) / 100;
             const userRotation = parseFloat(watchRotationSlider.value);
-            
             const finalScale = smoothedState.scale * userScale;
             const finalRotation = smoothedState.rotation + userRotation;
-
-            const w = watchImage.width * finalScale;
+            const w = watchImage.width * finalScale; 
             const h = watchImage.height * finalScale;
-            const x = smoothedState.x - w / 2;
-            const y = smoothedState.y - h / 2;
             
             ctx.save();
-            ctx.translate(smoothedState.x, smoothedState.y);
-            ctx.rotate(finalRotation * Math.PI / 180);
+            // We need to mirror the watch drawing to match the mirrored hand landmarks.
+            const mirroredX = tryOnCanvas.width - smoothedState.x;
+            ctx.translate(mirroredX, smoothedState.y);
+            // Since the hand is mirrored, we also need to invert the rotation.
+            ctx.rotate(-finalRotation * Math.PI / 180);
             ctx.drawImage(watchImage, -w / 2, -h / 2, w, h);
             ctx.restore();
         }
-
-        // --- Event Listeners ---
+        
+        // --- NEW: ROBUST CAMERA START LOGIC ---
         startCamBtn.addEventListener('click', async () => {
             showLoadingState('Requesting camera access...', true, false);
+
+            // 1. Check for Secure Context
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                const isSecure = window.location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(window.location.hostname);
+                if (!isSecure) {
+                    showLoadingState("Camera access requires a secure server. Please use 'Go Live' in VS Code or run on HTTPS.", false, false);
+                    return;
+                }
+                 showLoadingState("Your browser does not support camera access.", false, false);
+                 return;
+            }
+
+            // 2. Try to get the camera stream
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
                 webcam.srcObject = stream;
@@ -243,11 +230,21 @@
                     });
                     camera.start();
                     loadingOverlay.style.display = 'none';
-                    if(!handDetected) smoothedState.x = tryOnCanvas.width / 2; smoothedState.y = tryOnCanvas.height / 2; // Center initially
+                    if(!handDetected) { 
+                        // Initial position in the center
+                        smoothedState.x = tryOnCanvas.width / 2;
+                        smoothedState.y = tryOnCanvas.height / 2; 
+                    }
                 };
             } catch(err) {
-                showLoadingState('Camera access denied. Please enable it in your browser settings and refresh.', false, true);
                 console.error("Camera access error:", err);
+                if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+                    showLoadingState("Camera permission was denied. Please allow it in your browser's address bar and refresh the page.", false, false);
+                } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+                    showLoadingState("No camera found. Please ensure a webcam is connected and not being used by another app.", false, true);
+                } else {
+                    showLoadingState(`Could not start camera. Error: ${err.name}`, false, true);
+                }
             }
         });
 
@@ -260,80 +257,49 @@
             }
         });
         
-        autoPositionToggle.addEventListener('change', (e) => {
-            useAI = e.target.checked;
-        });
+        autoPositionToggle.addEventListener('change', (e) => { useAI = e.target.checked; });
 
-        // --- Drag & Drop for Manual Adjustment ---
         const getEventCoordinates = (e) => {
             const rect = tryOnCanvas.getBoundingClientRect();
             const x = e.touches ? e.touches[0].clientX : e.clientX;
             const y = e.touches ? e.touches[0].clientY : e.clientY;
-            // IMPORTANT: We do NOT mirror the coordinates here because the canvas context is already mirrored.
             return { x: x - rect.left, y: y - rect.top };
         };
 
         const handleDragStart = (e) => {
             if (!watchImage.src || useAI) return;
             const coords = getEventCoordinates(e);
-            // Check if the click is near the watch
-            if (Math.hypot(coords.x - smoothedState.x, coords.y - smoothedState.y) < (watchImage.width * smoothedState.scale)) {
-                e.preventDefault();
-                isDragging = true;
-                tryOnCanvas.classList.add('dragging');
-                dragStart.x = coords.x - smoothedState.x;
-                dragStart.y = coords.y - smoothedState.y;
+            const mirroredX = tryOnCanvas.width - smoothedState.x; // Check against mirrored position
+            if (Math.hypot(coords.x - mirroredX, coords.y - smoothedState.y) < (watchImage.width * smoothedState.scale * (parseFloat(watchSizeSlider.value)/100))/2) {
+                e.preventDefault(); isDragging = true; tryOnCanvas.classList.add('dragging');
+                dragStart.x = coords.x - mirroredX; dragStart.y = coords.y - smoothedState.y;
             }
         };
 
         const handleDragMove = (e) => {
-            if (!isDragging) return;
-            e.preventDefault();
+            if (!isDragging) return; e.preventDefault();
             const coords = getEventCoordinates(e);
-            smoothedState.x = coords.x - dragStart.x;
+            // Update the original, un-mirrored state
+            smoothedState.x = tryOnCanvas.width - (coords.x - dragStart.x);
             smoothedState.y = coords.y - dragStart.y;
         };
 
-        const handleDragEnd = () => {
-            isDragging = false;
-            tryOnCanvas.classList.remove('dragging');
-        };
+        const handleDragEnd = () => { isDragging = false; tryOnCanvas.classList.remove('dragging'); };
 
-        tryOnCanvas.addEventListener('mousedown', handleDragStart);
-        tryOnCanvas.addEventListener('mousemove', handleDragMove);
-        document.addEventListener('mouseup', handleDragEnd);
-        tryOnCanvas.addEventListener('mouseleave', handleDragEnd);
-        tryOnCanvas.addEventListener('touchstart', handleDragStart, { passive: false });
-        tryOnCanvas.addEventListener('touchmove', handleDragMove, { passive: false });
+        tryOnCanvas.addEventListener('mousedown', handleDragStart); tryOnCanvas.addEventListener('mousemove', handleDragMove);
+        document.addEventListener('mouseup', handleDragEnd); tryOnCanvas.addEventListener('mouseleave', handleDragEnd);
+        tryOnCanvas.addEventListener('touchstart', handleDragStart, { passive: false }); tryOnCanvas.addEventListener('touchmove', handleDragMove, { passive: false });
         tryOnCanvas.addEventListener('touchend', handleDragEnd);
 
         downloadBtn.addEventListener('click', () => {
-            const tempCanvas = document.createElement('canvas');
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCanvas.width = tryOnCanvas.width;
-            tempCanvas.height = tryOnCanvas.height;
-            // Draw the NON-MIRRORED version for the snapshot
-            tempCtx.drawImage(webcam, 0, 0, tempCanvas.width, tempCanvas.height);
-            // Manually re-draw the watch in the correct, non-mirrored position
-            const finalScale = (smoothedState.scale * (parseFloat(watchSizeSlider.value) / 100));
-            const finalRotation = smoothedState.rotation + parseFloat(watchRotationSlider.value);
-            const w = watchImage.width * finalScale;
-            const h = watchImage.height * finalScale;
-            // Invert the X position for the snapshot
-            const finalX = tempCanvas.width - smoothedState.x;
-            tempCtx.save();
-            tempCtx.translate(finalX, smoothedState.y);
-            tempCtx.rotate(-finalRotation * Math.PI / 180); // Invert rotation
-            tempCtx.drawImage(watchImage, -w / 2, -h / 2, w, h);
-            tempCtx.restore();
-
+            const tempCanvas = document.createElement('canvas'); const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = tryOnCanvas.width; tempCanvas.height = tryOnCanvas.height;
+            // Draw the *final view* from the tryOnCanvas, not the raw webcam feed
+            tempCtx.drawImage(tryOnCanvas, 0, 0);
             const link = document.createElement('a');
-            link.download = 'ChronoFit-Live-Snapshot.png';
-            link.href = tempCanvas.toDataURL('image/png');
-            link.click();
+            link.download = 'ChronoFit-Live-Snapshot.png'; link.href = tempCanvas.toDataURL('image/png'); link.click();
         });
 
-        // --- Initialization ---
         window.onload = () => {
             const firstWatch = document.querySelector('#watchFaceOptions .option-image');
             if(firstWatch) firstWatch.click();
